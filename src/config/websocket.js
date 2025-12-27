@@ -55,6 +55,38 @@ function attachIO(httpServer, ioOptions = {}) {
     socket.on('typing:start', ({ chatId }) => { if (chatId) socket.to(String(chatId)).emit('typing:start', { chatId, userId: socket.userId }); });
     socket.on('typing:stop', ({ chatId }) => { if (chatId) socket.to(String(chatId)).emit('typing:stop', { chatId, userId: socket.userId }); });
     socket.on('message:read', ({ chatId, messageIds }) => { if (chatId) socket.to(String(chatId)).emit('message:read', { chatId, userId: socket.userId, messageIds }); });
+    socket.on('message:delivered', async ({ messageId, chatId, messageIds }) => {
+      try {
+        const Message = require('../models/Message');
+        const Chat = require('../models/Chat');
+        if (messageId) {
+          const msg = await Message.findById(messageId);
+          if (!msg) return;
+          const chat = await Chat.findById(msg.chatId);
+          if (!chat || chat.isGroup) return;
+          if (String(msg.sender) === String(socket.userId)) return;
+          if (msg.status === 'none') {
+            msg.status = 'delivered'; await msg.save();
+            socket.to(String(msg.chatId)).emit('message:status', { chatId: msg.chatId, messageIds: [msg._id], status: 'delivered', userId: socket.userId });
+          }
+          return;
+        }
+        if (chatId) {
+          const chat = await Chat.findById(chatId);
+          if (!chat || chat.isGroup) return;
+          const filter = { chatId, sender: { $ne: socket.userId }, status: { $ne: 'delivered' } };
+          if (Array.isArray(messageIds) && messageIds.length) filter._id = { $in: messageIds };
+          const toUpdate = await Message.find(filter).select('_id');
+          const ids = toUpdate.map(m => m._id);
+          if (ids.length) {
+            await Message.updateMany({ _id: { $in: ids } }, { $set: { status: 'delivered' } });
+            socket.to(String(chatId)).emit('message:status', { chatId, messageIds: ids, status: 'delivered', userId: socket.userId });
+          }
+        }
+      } catch (e) {
+        console.error('socket delivered handler error', e.message);
+      }
+    });
 
     // simple ping/pong diagnostic
     socket.on('ping:client', () => socket.emit('pong:server', { ts: Date.now() }));

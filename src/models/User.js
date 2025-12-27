@@ -5,6 +5,7 @@ const UserSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, unique: true, index: true, required: true },
   password: { type: String, required: true },
+  avatarUrl: { type: String },
   contacts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   pinnedChats: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Chat' }],
   notificationsToken: { type: String },

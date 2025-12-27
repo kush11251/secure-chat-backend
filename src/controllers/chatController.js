@@ -5,7 +5,13 @@ const { emitToUsers } = require('../config/websocket');
 exports.listChats = async (req, res) => {
   const userId = req.user.id;
   const chats = await Chat.find({ members: userId }).sort({ updatedAt: -1 }).populate('members', '_id uid name status').populate('lastMessage');
-  res.json({ chats });
+  // compute unreadCount per chat (messages not read by this user)
+  const Message = require('../models/Message');
+  const chatsWithCounts = await Promise.all(chats.map(async (c) => {
+    const unread = await Message.countDocuments({ chatId: c._id, readBy: { $ne: userId } });
+    return Object.assign(c.toObject(), { unreadCount: unread });
+  }));
+  res.json({ chats: chatsWithCounts });
 };
 
 exports.getOrCreateDirect = async (req, res) => {

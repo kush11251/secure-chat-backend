@@ -12,7 +12,7 @@ exports.sendMessage = async (req, res) => {
     if (!chat || !chat.members.map(String).includes(userId)) return res.status(403).json({ message: 'Not a member' });
     const msg = await Message.create({ chatId, sender: userId, type, content, mediaUrl, readBy: [userId] });
     await Chat.findByIdAndUpdate(chatId, { lastMessage: msg._id, updatedAt: new Date() });
-    const populated = await Message.findById(msg._id).populate('sender', '_id uid name');
+    const populated = await Message.findById(msg._id).populate('sender', '_id uid name avatarUrl');
     getIO().to(String(chatId)).emit('message:receive', { chatId, message: populated });
     const otherMembers = chat.members.filter(m => String(m) !== String(userId));
     emitToUsers(otherMembers, 'message:receive', { chatId, message: populated });
@@ -34,7 +34,7 @@ exports.getMessages = async (req, res) => {
   if (!chat || !chat.members.map(String).includes(userId)) return res.status(403).json({ message: 'Not a member' });
   const filter = { chatId };
   if (before) filter.createdAt = { $lt: new Date(before) };
-  const messages = await Message.find(filter).sort({ createdAt: -1 }).limit(Math.min(Number(limit), 100)).populate('sender', '_id uid name');
+  const messages = await Message.find(filter).sort({ createdAt: -1 }).limit(Math.min(Number(limit), 100)).populate('sender', '_id uid name avatarUrl');
   res.json({ messages: messages.reverse() });
 };
 
@@ -61,7 +61,53 @@ exports.removeReaction = async (req, res) => {
 
 exports.markRead = async (req, res) => {
   const { chatId } = req.params; const userId = req.user.id;
-  const result = await Message.updateMany({ chatId, readBy: { $ne: userId } }, { $addToSet: { readBy: userId } });
+  const chat = await Chat.findById(chatId);
+  if (!chat || !chat.members.map(String).includes(userId)) return res.status(403).json({ message: 'Not a member' });
+  // find messages that were unread by this user
+  const unread = await Message.find({ chatId, readBy: { $ne: userId } }).select('_id sender');
+  const unreadIds = unread.map(m => m._id);
+  if (unreadIds.length === 0) return res.json({ updated: 0 });
+  await Message.updateMany({ _id: { $in: unreadIds } }, { $addToSet: { readBy: userId } });
+  // For direct (private) chats, mark messages from other user as 'seen'
+  let seenIds = [];
+  if (!chat.isGroup) {
+    seenIds = unread.filter(m => String(m.sender) !== String(userId)).map(m => m._id);
+    if (seenIds.length) await Message.updateMany({ _id: { $in: seenIds } }, { $set: { status: 'seen' } });
+  }
   getIO().to(String(chatId)).emit('message:read', { chatId, userId });
-  res.json({ updated: result.modifiedCount || 0 });
+  if (seenIds.length) getIO().to(String(chatId)).emit('message:status', { chatId, messageIds: seenIds, status: 'seen', userId });
+  res.json({ updated: unreadIds.length, seen: seenIds.length });
+};
+
+// mark a single message as delivered (private chats only)
+exports.markDelivered = async (req, res) => {
+  const { messageId } = req.params; const userId = req.user.id;
+  const msg = await Message.findById(messageId);
+  if (!msg) return res.status(404).json({ message: 'Message not found' });
+  const chat = await Chat.findById(msg.chatId);
+  if (!chat || !chat.members.map(String).includes(userId)) return res.status(403).json({ message: 'Not a member' });
+  if (chat.isGroup) return res.status(400).json({ message: 'Delivery status not tracked for groups' });
+  if (String(msg.sender) === String(userId)) return res.status(400).json({ message: 'Sender cannot mark delivered' });
+  if (msg.status === 'delivered' || msg.status === 'seen') return res.json({ updated: 0 });
+  msg.status = 'delivered';
+  await msg.save();
+  getIO().to(String(msg.chatId)).emit('message:status', { chatId: msg.chatId, messageIds: [msg._id], status: 'delivered', userId });
+  res.json({ updated: 1 });
+};
+
+// bulk mark delivered for a chat (optionally only given messageIds)
+exports.markDeliveredBulk = async (req, res) => {
+  const { chatId, messageIds } = req.body; const userId = req.user.id;
+  if (!chatId) return res.status(400).json({ message: 'chatId required' });
+  const chat = await Chat.findById(chatId);
+  if (!chat || !chat.members.map(String).includes(userId)) return res.status(403).json({ message: 'Not a member' });
+  if (chat.isGroup) return res.status(400).json({ message: 'Delivery status not tracked for groups' });
+  const filter = { chatId, sender: { $ne: userId }, status: { $ne: 'delivered' } };
+  if (Array.isArray(messageIds) && messageIds.length) filter._id = { $in: messageIds };
+  const toUpdate = await Message.find(filter).select('_id');
+  const ids = toUpdate.map(m => m._id);
+  if (ids.length === 0) return res.json({ updated: 0 });
+  await Message.updateMany({ _id: { $in: ids } }, { $set: { status: 'delivered' } });
+  getIO().to(String(chatId)).emit('message:status', { chatId, messageIds: ids, status: 'delivered', userId });
+  res.json({ updated: ids.length });
 };

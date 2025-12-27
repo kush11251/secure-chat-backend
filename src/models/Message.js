@@ -12,7 +12,12 @@ const MessageSchema = new mongoose.Schema({
   content: { type: String },
   mediaUrl: { type: String },
   reactions: [ReactionSchema],
-  readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
+  readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  // status applies to private chats to indicate delivery/read state for the recipient
+  // 'none' (default) - message sent, not delivered
+  // 'delivered' - recipient's client received the message
+  // 'seen' - recipient opened the chat / read the message
+  status: { type: String, enum: ['none', 'delivered', 'seen'], default: 'none' }
 }, { timestamps: true });
 
 MessageSchema.index({ chatId: 1, createdAt: -1 });
